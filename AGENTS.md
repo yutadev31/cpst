@@ -71,3 +71,4 @@ cargo run --bin pst -- --primary
   readability.
 - If the task is ambiguous or lacks necessary information, ask for
   clarification before proceeding.
+- After completing work, output an English commit message following the Conventional Commits specification.
