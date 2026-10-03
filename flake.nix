@@ -35,14 +35,10 @@
           typos-lsp
           pkg-config
         ];
-
-        buildInputs = with pkgs; [
-        ];
       in
       {
         devShells.default = pkgs.mkShell {
-          inherit nativeBuildInputs buildInputs;
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
+          inherit nativeBuildInputs;
         };
       }
     );
