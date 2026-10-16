@@ -8,7 +8,7 @@ to standard output.
 
 It provides two binaries:
 
-- `cpy`: copies stdin to the system clipboard.
+- `cpy`: copies UTF-8 text or PNG images from stdin to the system clipboard.
 - `pst`: writes the system clipboard to stdout.
 
 Both tools use the regular system clipboard. Clipboard access is implemented
@@ -52,6 +52,7 @@ Run the tools locally with stdin/stdout, for example:
 ```sh
 printf 'hello' | cargo run --bin cpy
 cargo run --bin pst
+grim - | cargo run --bin cpy
 ```
 
 ## Development Principles

@@ -5,7 +5,7 @@ the system clipboard.
 
 It provides two commands:
 
-- `cpy` copies text from standard input to the system clipboard.
+- `cpy` copies UTF-8 text or a PNG image from standard input to the system clipboard.
 - `pst` writes the system clipboard contents to standard output.
 
 ## Installation
@@ -34,6 +34,12 @@ Copy text to the clipboard:
 printf 'hello, clipboard!\n' | cpy
 ```
 
+Copy a screenshot on Wayland:
+
+```sh
+grim - | cpy
+```
+
 Paste the clipboard contents:
 
 ```sh
@@ -41,8 +47,8 @@ pst
 ```
 
 Both commands use the regular system clipboard. `cpy` reads all input
-from standard input and accepts UTF-8 text; `pst` writes the text without
-adding a newline.
+from standard input and accepts UTF-8 text or PNG images; `pst` writes
+clipboard text without adding a newline.
 
 ## Platform support
 

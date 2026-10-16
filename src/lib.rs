@@ -1,20 +1,33 @@
 use std::io::{self, Read, Write};
 
-use arboard::Clipboard;
+use arboard::{Clipboard, ImageData};
+
+const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+
+enum Content {
+    Text(String),
+    Image(ImageData<'static>),
+}
 
 pub fn copy() -> Result<(), String> {
-    let text = read_stdin()?;
+    let input = read_stdin()?;
 
     #[cfg(target_os = "linux")]
-    return spawn_daemon(text);
+    {
+        parse_content(&input)?;
+        spawn_daemon(input)
+    }
 
     #[cfg(not(target_os = "linux"))]
     {
+        let content = parse_content(&input)?;
         let mut clipboard =
             Clipboard::new().map_err(|error| format!("failed to open clipboard: {error}"))?;
-        clipboard
-            .set_text(text)
-            .map_err(|error| format!("failed to set clipboard: {error}"))
+        match content {
+            Content::Text(text) => clipboard.set_text(text),
+            Content::Image(image) => clipboard.set_image(image),
+        }
+        .map_err(|error| format!("failed to set clipboard: {error}"))
     }
 }
 
@@ -24,40 +37,62 @@ pub fn copy() -> Result<(), String> {
 /// require the process that owns a selection to keep serving requests, so the
 /// public `copy` function starts this function in a detached child process.
 pub fn run_daemon() -> Result<(), String> {
-    let text = read_stdin()?;
+    let input = read_stdin()?;
 
     #[cfg(target_os = "linux")]
     {
         use arboard::{LinuxClipboardKind, SetExtLinux};
 
+        let content = parse_content(&input)?;
+        drop(input);
         let mut clipboard =
             Clipboard::new().map_err(|error| format!("failed to open clipboard: {error}"))?;
-        clipboard
+        let operation = clipboard
             .set()
             .clipboard(LinuxClipboardKind::Clipboard)
-            .wait()
-            .text(text)
-            .map_err(|error| format!("failed to set clipboard: {error}"))
+            .wait();
+        match content {
+            Content::Text(text) => operation.text(text),
+            Content::Image(image) => operation.image(image),
+        }
+        .map_err(|error| format!("failed to set clipboard: {error}"))
     }
 
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = text;
+        let _ = input;
         Err("the clipboard daemon is only supported on Linux".to_owned())
     }
 }
 
-fn read_stdin() -> Result<String, String> {
+fn read_stdin() -> Result<Vec<u8>, String> {
     let mut input = Vec::new();
     io::stdin()
         .read_to_end(&mut input)
         .map_err(|error| format!("failed to read stdin: {error}"))?;
-    String::from_utf8(input)
-        .map_err(|_| "stdin is not valid UTF-8; cpy only supports text".to_owned())
+    Ok(input)
+}
+
+fn parse_content(input: &[u8]) -> Result<Content, String> {
+    if input.starts_with(PNG_SIGNATURE) {
+        let image = image::load_from_memory_with_format(input, image::ImageFormat::Png)
+            .map_err(|error| format!("failed to decode PNG from stdin: {error}"))?
+            .into_rgba8();
+        let (width, height) = image.dimensions();
+        Ok(Content::Image(ImageData {
+            width: width as usize,
+            height: height as usize,
+            bytes: image.into_raw().into(),
+        }))
+    } else {
+        let text = std::str::from_utf8(input)
+            .map_err(|_| "stdin is neither UTF-8 text nor a PNG image".to_owned())?;
+        Ok(Content::Text(text.to_owned()))
+    }
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_daemon(text: String) -> Result<(), String> {
+fn spawn_daemon(input: Vec<u8>) -> Result<(), String> {
     use std::process::{Command as ProcessCommand, Stdio};
 
     let executable = std::env::current_exe()
@@ -77,7 +112,7 @@ fn spawn_daemon(text: String) -> Result<(), String> {
         .take()
         .ok_or_else(|| "failed to open clipboard daemon stdin".to_owned())?;
     stdin
-        .write_all(text.as_bytes())
+        .write_all(&input)
         .map_err(|error| format!("failed to send data to clipboard daemon: {error}"))
 }
 
@@ -107,4 +142,49 @@ fn get_text(clipboard: &mut Clipboard) -> Result<String, String> {
     clipboard
         .get_text()
         .map_err(|error| format!("failed to read clipboard: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+
+    #[test]
+    fn parses_text() {
+        let Content::Text(text) = parse_content("hello 世界".as_bytes()).unwrap() else {
+            panic!("expected text");
+        };
+        assert_eq!(text, "hello 世界");
+    }
+
+    #[test]
+    fn parses_png_as_rgba_image() {
+        let pixels = [255, 0, 0, 128];
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(&pixels, 1, 1, ExtendedColorType::Rgba8)
+            .unwrap();
+
+        let Content::Image(image) = parse_content(&png).unwrap() else {
+            panic!("expected image");
+        };
+        assert_eq!((image.width, image.height), (1, 1));
+        assert_eq!(image.bytes.as_ref(), pixels);
+    }
+
+    #[test]
+    fn reports_invalid_input() {
+        assert!(
+            parse_content(b"\x89PNG\r\n\x1a\ninvalid")
+                .err()
+                .unwrap()
+                .contains("decode PNG")
+        );
+        assert!(
+            parse_content(b"\xff")
+                .err()
+                .unwrap()
+                .contains("neither UTF-8")
+        );
+    }
 }
