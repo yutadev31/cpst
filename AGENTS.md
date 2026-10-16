@@ -11,9 +11,8 @@ It provides two binaries:
 - `cpy`: copies stdin to the system clipboard.
 - `pst`: writes the system clipboard to stdout.
 
-On Linux, both tools support the X11/Wayland primary selection with
-`--primary` (or `-p`). Clipboard access is implemented with `arboard`, and
-command-line parsing is handled with `clap`.
+Both tools use the regular system clipboard. Clipboard access is implemented
+with `arboard`, and command-line parsing is handled with `clap`.
 
 ## Repository Layout
 
@@ -53,8 +52,6 @@ Run the tools locally with stdin/stdout, for example:
 ```sh
 printf 'hello' | cargo run --bin cpy
 cargo run --bin pst
-printf 'primary selection' | cargo run --bin cpy -- --primary
-cargo run --bin pst -- --primary
 ```
 
 ## Development Principles

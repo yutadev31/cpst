@@ -1,32 +1,35 @@
 use clap::Parser;
-use cpst::{Options, Selection, copy, run_daemon};
+use cpst::{copy, run_daemon};
 
 #[derive(Parser)]
 #[command(name = "cpy", version, about = "Copy stdin to the system clipboard")]
-struct Cpy {
-    #[command(flatten)]
-    options: Options,
-}
+struct Cpy;
 
 fn main() {
     let mut arguments = std::env::args();
     arguments.next();
     if arguments.next().as_deref() == Some("__internal_daemonize") {
-        let selection = if arguments.any(|argument| argument == "--primary") {
-            Selection::Primary
-        } else {
-            Selection::Clipboard
-        };
-        if let Err(error) = run_daemon(selection) {
+        if let Err(error) = run_daemon() {
             eprintln!("cpy: {error}");
             std::process::exit(1);
         }
         return;
     }
 
-    let cli = Cpy::parse();
-    if let Err(error) = copy(cli.options.selection()) {
+    Cpy::parse();
+    if let Err(error) = copy() {
         eprintln!("cpy: {error}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_primary_options() {
+        assert!(Cpy::try_parse_from(["cpy", "-p"]).is_err());
+        assert!(Cpy::try_parse_from(["cpy", "--primary"]).is_err());
     }
 }

@@ -8,8 +8,6 @@ It provides two commands:
 - `cpy` copies text from standard input to the system clipboard.
 - `pst` writes the system clipboard contents to standard output.
 
-On Linux, both commands can also use the X11/Wayland primary selection.
-
 ## Installation
 
 Install from a local checkout with Cargo:
@@ -42,23 +40,14 @@ Paste the clipboard contents:
 pst
 ```
 
-Both commands support `-p` and `--primary` on Linux for the primary
-selection:
-
-```sh
-printf 'selected text\n' | cpy --primary
-pst --primary
-```
-
-The default selection is the regular system clipboard. `cpy` reads all input
+Both commands use the regular system clipboard. `cpy` reads all input
 from standard input and accepts UTF-8 text; `pst` writes the text without
 adding a newline.
 
 ## Platform support
 
-The regular system clipboard is supported on platforms supported by
-[`arboard`](https://docs.rs/arboard). The `--primary` option is available only
-on Linux, where it uses the X11/Wayland primary selection.
+The system clipboard is supported on platforms supported by
+[`arboard`](https://docs.rs/arboard).
 
 On Linux, clipboard access requires a working graphical session and the
 appropriate X11 or Wayland runtime. When building from source, the Nix
