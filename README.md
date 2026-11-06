@@ -51,7 +51,7 @@ Both commands use the regular system clipboard. `cpy` reads all input from stand
 
 The system clipboard is supported on platforms supported by [`arboard`](https://docs.rs/arboard).
 
-On Linux, clipboard access requires a working graphical session and the appropriate X11 or Wayland runtime. When building from source, the Nix development shell and CI configuration provide the Wayland development dependency.
+On Linux and BSD, clipboard access requires a working graphical session and the appropriate X11 or Wayland runtime. When building from source, the Nix development shell and CI configuration provide the Wayland development dependency.
 
 ## Development
 
@@ -77,8 +77,7 @@ This project is licensed under the MIT License. See [`LICENSE.txt`](LICENSE.txt)
 
 ## Library errors
 
-`copy`, `paste`, and `run_daemon` return `Result<(), cpst::Error>` instead of `Result<(), String>`. Match error variants when handling failures and use `std::error::Error::source` to inspect local operation failures. Use `to_string()` when a string is needed. Errors reported by the separate Linux daemon retain its protocol message; an in-process source is unavailable across that process boundary. The CLI and daemon protocol are unchanged.
+`copy`, `paste`, and `run_daemon` return `Result<(), cpst::Error>` instead of `Result<(), String>`. Match error variants when handling failures and use `std::error::Error::source` to inspect local operation failures. Use `to_string()` when a string is needed. Errors reported by the separate clipboard daemon retain its protocol message; an in-process source is unavailable across that process boundary. The CLI and daemon protocol are unchanged.
 
 The `copy` library function requires the path to an executable that handles
-`DAEMON_ARGUMENT` by calling `run_daemon`. The argument is unused on non-Linux
-platforms. Input validation on Linux occurs in the daemon.
+`DAEMON_ARGUMENT` by calling `run_daemon`. The argument is unused on Windows and macOS. On other platforms, input validation occurs in the daemon.

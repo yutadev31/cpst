@@ -1,8 +1,8 @@
 use arboard::{Clipboard, ImageData};
 use std::io::{self, Read, Write};
 
-#[cfg(target_os = "linux")]
-mod linux;
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+mod daemon;
 
 /// A clipboard operation failure, retaining its underlying cause when available.
 #[derive(Debug, thiserror::Error)]
@@ -52,8 +52,8 @@ enum Content {
     Image(ImageData<'static>),
 }
 
-/// On Linux, `daemon_executable` must handle [`DAEMON_ARGUMENT`] by calling [`run_daemon`].
-/// The executable argument is unused on other platforms.
+/// Outside Windows and macOS, `daemon_executable` must handle [`DAEMON_ARGUMENT`] by calling [`run_daemon`].
+/// The executable argument is unused on Windows and macOS.
 ///
 /// Copies UTF-8 text or PNG pixels from stdin to the clipboard.
 ///
@@ -62,12 +62,12 @@ enum Content {
 pub fn copy(daemon_executable: &std::path::Path) -> Result<(), Error> {
     let input = read_stdin()?;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        linux::spawn_daemon(daemon_executable, &input)
+        daemon::spawn_daemon(daemon_executable, &input)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = daemon_executable;
         let content = parse_content(&input)?;
@@ -82,7 +82,7 @@ pub fn copy(daemon_executable: &std::path::Path) -> Result<(), Error> {
     }
 }
 
-/// Runs the long-lived Linux clipboard provider used by `cpy` internally.
+/// Runs the long-lived clipboard provider used by `cpy` internally.
 ///
 /// This is intentionally not exposed as a user-facing command. Wayland and X11
 /// require the process that owns a selection to keep serving requests, so the
@@ -93,16 +93,16 @@ pub fn copy(daemon_executable: &std::path::Path) -> Result<(), Error> {
 pub fn run_daemon() -> Result<(), Error> {
     let input = read_stdin()?;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        linux::run(input)
+        daemon::run(input)
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = input;
         Err(Error::Daemon(
-            "the clipboard daemon is only supported on Linux".to_owned(),
+            "the clipboard daemon is not supported on Windows or macOS".to_owned(),
         ))
     }
 }
@@ -139,9 +139,9 @@ fn parse_content(input: &[u8]) -> Result<Content, Error> {
 pub fn paste() -> Result<(), Error> {
     let mut clipboard =
         Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
-    #[cfg(target_os = "linux")]
-    let text = linux::get_text(&mut clipboard)?;
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    let text = daemon::get_text(&mut clipboard)?;
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     let text = get_text(&mut clipboard)?;
     let mut stdout = io::stdout();
     stdout
@@ -150,7 +150,7 @@ pub fn paste() -> Result<(), Error> {
         .map_err(|error| Error::operation("failed to write stdout", error))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn get_text(clipboard: &mut Clipboard) -> Result<String, Error> {
     clipboard
         .get_text()
