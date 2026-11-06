@@ -9,5 +9,4 @@ pkgs.rustPlatform.buildRustPackage {
   inherit (package) version;
   src = ../../.;
   cargoLock.lockFile = ../../Cargo.lock;
-  nativeCheckInputs = [ pkgs.git ];
 }
