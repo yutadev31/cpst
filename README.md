@@ -78,3 +78,7 @@ This project is licensed under the MIT License. See [`LICENSE.txt`](LICENSE.txt)
 ## Library errors
 
 `copy`, `paste`, and `run_daemon` return `Result<(), cpst::Error>` instead of `Result<(), String>`. Match error variants when handling failures and use `std::error::Error::source` to inspect local operation failures. Use `to_string()` when a string is needed. Errors reported by the separate Linux daemon retain its protocol message; an in-process source is unavailable across that process boundary. The CLI and daemon protocol are unchanged.
+
+The `copy` library function requires the path to an executable that handles
+`DAEMON_ARGUMENT` by calling `run_daemon`. The argument is unused on non-Linux
+platforms. Input validation on Linux occurs in the daemon.

@@ -1,13 +1,8 @@
-use std::io::{self, Read, Write};
-#[cfg(target_os = "linux")]
-use std::{
-    sync::mpsc,
-    time::{Duration, Instant},
-};
-
 use arboard::{Clipboard, ImageData};
+use std::io::{self, Read, Write};
+
 #[cfg(target_os = "linux")]
-use arboard::{GetExtLinux, LinuxClipboardKind, SetExtLinux};
+mod linux;
 
 /// A clipboard operation failure, retaining its underlying cause when available.
 #[derive(Debug, thiserror::Error)]
@@ -48,29 +43,33 @@ impl From<&str> for Error {
     }
 }
 
+pub const DAEMON_ARGUMENT: &str = "__internal_daemonize";
+
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 
-#[derive(Clone)]
 enum Content {
     Text(String),
     Image(ImageData<'static>),
 }
 
+/// On Linux, `daemon_executable` must handle [`DAEMON_ARGUMENT`] by calling [`run_daemon`].
+/// The executable argument is unused on other platforms.
+///
 /// Copies UTF-8 text or PNG pixels from stdin to the clipboard.
 ///
 /// # Errors
 /// Returns an error if input cannot be read or decoded, or clipboard ownership fails.
-pub fn copy() -> Result<(), Error> {
+pub fn copy(daemon_executable: &std::path::Path) -> Result<(), Error> {
     let input = read_stdin()?;
 
     #[cfg(target_os = "linux")]
     {
-        parse_content(&input)?;
-        spawn_daemon(&input)
+        linux::spawn_daemon(daemon_executable, &input)
     }
 
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = daemon_executable;
         let content = parse_content(&input)?;
         let mut clipboard = Clipboard::new()
             .map_err(|error| Error::operation("failed to open clipboard", error))?;
@@ -96,57 +95,7 @@ pub fn run_daemon() -> Result<(), Error> {
 
     #[cfg(target_os = "linux")]
     {
-        let content = parse_content(&input)?;
-        drop(input);
-        let expected = content.clone();
-        let (sender, receiver) = mpsc::sync_channel(1);
-        // The set operation blocks while this process owns the selection.
-        std::thread::Builder::new()
-            .name("cpst-clipboard-provider".to_owned())
-            .spawn(move || {
-                let _ = sender.send(provide_selection(content));
-            })
-            .map_err(|error| Error::operation("failed to start clipboard provider", error))?;
-
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let mut probe = Clipboard::new()
-            .map_err(|error| Error::operation("failed to open clipboard", error))?;
-        let mut last_probe_error = None;
-
-        // Read back the selection before telling the parent that copying succeeded.
-        loop {
-            match receiver.try_recv() {
-                Ok(Err(error)) => return Err(error),
-                Ok(Ok(())) => return Err("clipboard ownership ended before confirmation".into()),
-                Err(mpsc::TryRecvError::Disconnected) => {
-                    return Err("clipboard provider stopped before confirmation".into());
-                }
-                Err(mpsc::TryRecvError::Empty) => {}
-            }
-
-            let confirmed = match selection_matches(&mut probe, &expected) {
-                Ok(confirmed) => confirmed,
-                Err(error) => {
-                    last_probe_error = Some(error);
-                    false
-                }
-            };
-
-            if confirmed {
-                io::stdout()
-                    .write_all(b"OK\n")
-                    .map_err(|error| Error::operation("failed to confirm clipboard copy", error))?;
-                return receiver
-                    .recv()
-                    .map_err(|error| Error::operation("clipboard provider stopped", error))?;
-            }
-
-            if Instant::now() >= deadline {
-                return Err(Error::ConfirmationTimeout(last_probe_error));
-            }
-
-            std::thread::sleep(Duration::from_millis(20));
-        }
+        linux::run(input)
     }
 
     #[cfg(not(target_os = "linux"))]
@@ -155,45 +104,6 @@ pub fn run_daemon() -> Result<(), Error> {
         Err(Error::Daemon(
             "the clipboard daemon is only supported on Linux".to_owned(),
         ))
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn provide_selection(content: Content) -> Result<(), Error> {
-    let mut clipboard =
-        Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
-    let operation = clipboard
-        .set()
-        .clipboard(LinuxClipboardKind::Clipboard)
-        .wait();
-
-    match content {
-        Content::Text(text) => operation.text(text),
-        Content::Image(image) => operation.image(image),
-    }
-    .map_err(|error| Error::operation("failed to set clipboard", error))
-}
-
-#[cfg(target_os = "linux")]
-fn selection_matches(
-    clipboard: &mut Clipboard,
-    expected: &Content,
-) -> Result<bool, arboard::Error> {
-    match expected {
-        Content::Text(text) => clipboard
-            .get()
-            .clipboard(LinuxClipboardKind::Clipboard)
-            .text()
-            .map(|actual| actual == *text),
-        Content::Image(image) => clipboard
-            .get()
-            .clipboard(LinuxClipboardKind::Clipboard)
-            .image()
-            .map(|actual| {
-                actual.width == image.width
-                    && actual.height == image.height
-                    && actual.bytes == image.bytes
-            }),
     }
 }
 
@@ -222,53 +132,6 @@ fn parse_content(input: &[u8]) -> Result<Content, Error> {
     Ok(Content::Text(text.to_owned()))
 }
 
-#[cfg(target_os = "linux")]
-fn spawn_daemon(input: &[u8]) -> Result<(), Error> {
-    use std::io::BufRead;
-    use std::process::{Command as ProcessCommand, Stdio};
-
-    let executable = std::env::current_exe()
-        .map_err(|error| Error::operation("failed to locate cpy for clipboard daemon", error))?;
-    let mut command = ProcessCommand::new(executable);
-    command
-        .arg("__internal_daemonize")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .current_dir("/");
-    let mut child = command
-        .spawn()
-        .map_err(|error| Error::operation("failed to start clipboard daemon", error))?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| Error::Daemon("failed to open clipboard daemon stdin".to_owned()))?;
-    stdin
-        .write_all(input)
-        .map_err(|error| Error::operation("failed to send data to clipboard daemon", error))?;
-    drop(stdin);
-
-    let mut response = String::new();
-    io::BufReader::new(
-        child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::Daemon("failed to read clipboard daemon response".to_owned()))?,
-    )
-    .read_line(&mut response)
-    .map_err(|error| Error::operation("failed to read clipboard daemon response", error))?;
-
-    match response.trim_end() {
-        "OK" => Ok(()),
-        error if let Some(error) = error.strip_prefix("ERR ") => {
-            Err(Error::Daemon(error.to_owned()))
-        }
-        _ => Err(Error::Daemon(
-            "clipboard daemon stopped without confirming the copy".to_owned(),
-        )),
-    }
-}
-
 /// Writes clipboard text to stdout.
 ///
 /// # Errors
@@ -276,21 +139,15 @@ fn spawn_daemon(input: &[u8]) -> Result<(), Error> {
 pub fn paste() -> Result<(), Error> {
     let mut clipboard =
         Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
+    #[cfg(target_os = "linux")]
+    let text = linux::get_text(&mut clipboard)?;
+    #[cfg(not(target_os = "linux"))]
     let text = get_text(&mut clipboard)?;
     let mut stdout = io::stdout();
     stdout
         .write_all(text.as_bytes())
         .and_then(|()| stdout.flush())
         .map_err(|error| Error::operation("failed to write stdout", error))
-}
-
-#[cfg(target_os = "linux")]
-fn get_text(clipboard: &mut Clipboard) -> Result<String, Error> {
-    clipboard
-        .get()
-        .clipboard(LinuxClipboardKind::Clipboard)
-        .text()
-        .map_err(|error| Error::operation("failed to read clipboard", error))
 }
 
 #[cfg(not(target_os = "linux"))]

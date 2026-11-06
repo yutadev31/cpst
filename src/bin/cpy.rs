@@ -9,7 +9,7 @@ fn main() {
     let mut arguments = std::env::args();
     arguments.next();
 
-    if arguments.next().as_deref() == Some("__internal_daemonize") {
+    if arguments.next().as_deref() == Some(cpst::DAEMON_ARGUMENT) {
         if let Err(error) = run_daemon() {
             println!("ERR {}", error.to_string().replace('\n', " "));
             std::process::exit(1);
@@ -20,7 +20,11 @@ fn main() {
 
     Cpy::parse();
 
-    if let Err(error) = copy() {
+    let result = std::env::current_exe()
+        .map_err(|error| error.to_string())
+        .and_then(|executable| copy(&executable).map_err(|error| error.to_string()));
+
+    if let Err(error) = result {
         eprintln!("cpy: {error}");
         std::process::exit(1);
     }
