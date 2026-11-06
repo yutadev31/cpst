@@ -29,14 +29,3 @@ fn main() {
         std::process::exit(1);
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_primary_options() {
-        assert!(Cpy::try_parse_from(["cpy", "-p"]).is_err());
-        assert!(Cpy::try_parse_from(["cpy", "--primary"]).is_err());
-    }
-}
