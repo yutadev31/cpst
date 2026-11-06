@@ -6,6 +6,7 @@ updates:
     schedule:
       interval: weekly
       day: monday
+
   - package-ecosystem: cargo
     directory: /
     schedule:
@@ -16,6 +17,7 @@ updates:
       rust-dependencies:
         patterns:
           - "*"
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
