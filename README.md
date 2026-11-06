@@ -12,13 +12,13 @@ It provides two commands:
 Install from the workspace root with Cargo:
 
 ```sh
-cargo install --path crates/cpst
+cargo install --path .
 ```
 
 If you have Nix installed, build the package with:
 
 ```sh
-nix build .#cpst
+nix build
 ./result/bin/cpy --help
 ./result/bin/pst --help
 ```
