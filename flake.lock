@@ -1,26 +1,5 @@
 {
   "nodes": {
-    "blueprint": {
-      "inputs": {
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "systems": "systems"
-      },
-      "locked": {
-        "lastModified": 1791920352,
-        "narHash": "sha256-Zbd0CGR2Dh9USbYglGXQ09FJXxxKkD5w5vi99nlz1yE=",
-        "owner": "numtide",
-        "repo": "blueprint",
-        "rev": "2bf123541bd5024046f32299c9f8a6cc6bdd8a9f",
-        "type": "github"
-      },
-      "original": {
-        "owner": "numtide",
-        "repo": "blueprint",
-        "type": "github"
-      }
-    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1793876309,
@@ -39,15 +18,13 @@
     },
     "root": {
       "inputs": {
-        "blueprint": "blueprint",
-        "nixpkgs": "nixpkgs",
-        "rust-overlay": "rust-overlay",
-        "treefmt-nix": "treefmt-nix"
+        "rustdev-nix": "rustdev-nix"
       }
     },
     "rust-overlay": {
       "inputs": {
         "nixpkgs": [
+          "rustdev-nix",
           "nixpkgs"
         ]
       },
@@ -65,24 +42,30 @@
         "type": "github"
       }
     },
-    "systems": {
+    "rustdev-nix": {
+      "inputs": {
+        "nixpkgs": "nixpkgs",
+        "rust-overlay": "rust-overlay",
+        "treefmt-nix": "treefmt-nix"
+      },
       "locked": {
-        "lastModified": 1681028828,
-        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
-        "owner": "nix-systems",
-        "repo": "default",
-        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "lastModified": 1794150636,
+        "narHash": "sha256-svvV4d8IkQIvs8Rnk238WbIs9Su8r3ZCLxlsMGZX42Q=",
+        "owner": "yutadev31",
+        "repo": "rustdev-nix",
+        "rev": "1e6ac0106748b22d8263e52ae5d9b1fc55d0d50e",
         "type": "github"
       },
       "original": {
-        "owner": "nix-systems",
-        "repo": "default",
+        "owner": "yutadev31",
+        "repo": "rustdev-nix",
         "type": "github"
       }
     },
     "treefmt-nix": {
       "inputs": {
         "nixpkgs": [
+          "rustdev-nix",
           "nixpkgs"
         ]
       },
