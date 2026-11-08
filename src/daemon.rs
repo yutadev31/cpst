@@ -296,10 +296,20 @@ mod tests {
     #[test]
     fn confirmation_reports_provider_failure_even_when_probe_is_blocked() {
         let (provider_sender, provider) = mpsc::sync_channel(1);
-        let (_probe_sender, probe) = mpsc::sync_channel(1);
+        let (probe_sender, probe) = mpsc::sync_channel(0);
+        let waiter = std::thread::spawn(move || {
+            wait_for_confirmation(&provider, &probe, Duration::from_secs(10))
+        });
+
+        // The rendezvous completes only after the wait has checked the empty
+        // provider channel and started receiving probe results. Keep the probe
+        // connected without delivering any further results.
+        probe_sender.send(ProbeEvent::Checked(Ok(false))).unwrap();
+        let start = Instant::now();
         provider_sender.send(Err("provider failed".into())).unwrap();
-        let error = wait_for_confirmation(&provider, &probe, Duration::from_secs(5)).unwrap_err();
+        let error = waiter.join().unwrap().unwrap_err();
         assert_eq!(error.to_string(), "provider failed");
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]
