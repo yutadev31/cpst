@@ -20,14 +20,57 @@ pub(super) fn run(input: Vec<u8>) -> Result<(), Error> {
         })
         .map_err(|error| Error::operation("failed to start clipboard provider", error))?;
 
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut probe =
-        Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
+    let (probe_sender, probe_receiver) = mpsc::sync_channel(0);
+    std::thread::Builder::new()
+        .name("cpst-clipboard-probe".to_owned())
+        .spawn(move || {
+            let mut probe = match Clipboard::new() {
+                Ok(probe) => probe,
+                Err(error) => {
+                    let _ = probe_sender.send(ProbeEvent::OpenFailed(error));
+                    return;
+                }
+            };
+
+            loop {
+                let result = selection_matches(&mut probe, &expected);
+                let confirmed = matches!(result, Ok(true));
+                if probe_sender.send(ProbeEvent::Checked(result)).is_err() || confirmed {
+                    return;
+                }
+
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        })
+        .map_err(|error| Error::operation("failed to start clipboard probe", error))?;
+
+    // Clipboard reads (including opening a connection) can block indefinitely.
+    // Keep the deadline on this thread so those reads cannot prevent a timeout.
+    wait_for_confirmation(&receiver, &probe_receiver, Duration::from_secs(30))?;
+    io::stdout()
+        .write_all(b"OK\n")
+        .map_err(|error| Error::operation("failed to confirm clipboard copy", error))?;
+    receiver
+        .recv()
+        .map_err(|error| Error::operation("clipboard provider stopped", error))?
+}
+
+enum ProbeEvent {
+    OpenFailed(arboard::Error),
+    Checked(Result<bool, arboard::Error>),
+}
+
+fn wait_for_confirmation(
+    provider: &mpsc::Receiver<Result<(), Error>>,
+    probe: &mpsc::Receiver<ProbeEvent>,
+    timeout: Duration,
+) -> Result<(), Error> {
+    let deadline = Instant::now() + timeout;
     let mut last_probe_error = None;
 
     // Read back the selection before telling the parent that copying succeeded.
     loop {
-        match receiver.try_recv() {
+        match provider.try_recv() {
             Ok(Err(error)) => return Err(error),
             Ok(Ok(())) => return Err("clipboard ownership ended before confirmation".into()),
             Err(mpsc::TryRecvError::Disconnected) => {
@@ -36,30 +79,26 @@ pub(super) fn run(input: Vec<u8>) -> Result<(), Error> {
             Err(mpsc::TryRecvError::Empty) => {}
         }
 
-        let confirmed = match selection_matches(&mut probe, &expected) {
-            Ok(confirmed) => confirmed,
-            Err(error) => {
-                last_probe_error = Some(error);
-                false
-            }
-        };
-
-        if confirmed {
-            io::stdout()
-                .write_all(b"OK\n")
-                .map_err(|error| Error::operation("failed to confirm clipboard copy", error))?;
-            return receiver
-                .recv()
-                .map_err(|error| Error::operation("clipboard provider stopped", error))?;
-        }
-
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return Err(Error::ConfirmationTimeout(last_probe_error));
         }
 
-        std::thread::sleep(Duration::from_millis(20));
+        match probe.recv_timeout(remaining.min(Duration::from_millis(20))) {
+            Ok(ProbeEvent::OpenFailed(error)) => {
+                return Err(Error::operation("failed to open clipboard", error));
+            }
+            Ok(ProbeEvent::Checked(Ok(true))) => return Ok(()),
+            Ok(ProbeEvent::Checked(Ok(false))) => {}
+            Ok(ProbeEvent::Checked(Err(error))) => last_probe_error = Some(error),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("clipboard probe stopped before confirmation".into());
+            }
+        }
     }
 }
+
 fn provide_selection(content: std::sync::Arc<Content>) -> Result<(), Error> {
     let mut clipboard =
         Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
@@ -179,12 +218,51 @@ pub(super) fn get_text(clipboard: &mut Clipboard) -> Result<String, Error> {
         .map_err(|error| Error::operation("failed to read clipboard", error))
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
     use std::io::BufRead;
 
     #[test]
+    fn confirmation_times_out_when_probe_stops_responding() {
+        let (_provider_sender, provider) = mpsc::sync_channel(1);
+        let (probe_sender, probe) = mpsc::sync_channel(1);
+        probe_sender
+            .send(ProbeEvent::Checked(Err(
+                arboard::Error::ContentNotAvailable,
+            )))
+            .unwrap();
+        let start = Instant::now();
+        let error =
+            wait_for_confirmation(&provider, &probe, Duration::from_millis(50)).unwrap_err();
+        assert!(matches!(
+            error,
+            Error::ConfirmationTimeout(Some(arboard::Error::ContentNotAvailable))
+        ));
+        assert!(start.elapsed() >= Duration::from_millis(50));
+        assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn confirmation_does_not_wait_for_provider_to_exit() {
+        let (_provider_sender, provider) = mpsc::sync_channel(1);
+        let (probe_sender, probe) = mpsc::sync_channel(1);
+        probe_sender.send(ProbeEvent::Checked(Ok(true))).unwrap();
+        wait_for_confirmation(&provider, &probe, Duration::from_secs(5)).unwrap();
+    }
+
+    #[test]
+    fn confirmation_reports_provider_failure_even_when_probe_is_blocked() {
+        let (provider_sender, provider) = mpsc::sync_channel(1);
+        let (_probe_sender, probe) = mpsc::sync_channel(1);
+        provider_sender.send(Err("provider failed".into())).unwrap();
+        let error = wait_for_confirmation(&provider, &probe, Duration::from_secs(5)).unwrap_err();
+        assert_eq!(error.to_string(), "provider failed");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
     fn reaps_child_without_waiting_for_its_lifetime() {
         let mut command = Command::new("sh");
         command
