@@ -22,8 +22,7 @@ pkgs.mkShell {
     nixd
     nixfmt
     typos-lsp
-    tombi
-
     rustToolchain
+    tombi
   ];
 }
