@@ -143,6 +143,16 @@ fn selection_matches(
 pub(super) fn spawn_daemon(executable: &std::path::Path, input: &[u8]) -> Result<(), Error> {
     use std::io::BufRead;
 
+    // Preserve PATH lookup for bare executable names, but resolve relative paths
+    // before changing the child's working directory.
+    let executable = if executable.is_relative() && executable.components().count() > 1 {
+        std::path::absolute(executable).map_err(|error| {
+            Error::operation("failed to resolve clipboard daemon executable", error)
+        })?
+    } else {
+        executable.to_path_buf()
+    };
+
     let mut command = Command::new(executable);
     command
         .arg(DAEMON_ARGUMENT)
@@ -223,6 +233,37 @@ mod tests {
     use super::*;
     #[cfg(target_os = "linux")]
     use std::io::BufRead;
+
+    #[test]
+    fn starts_daemon_using_a_relative_executable_path() {
+        let executable = std::env::current_exe().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let mut relative = std::path::PathBuf::from(".");
+        for _ in cwd.ancestors().skip(1) {
+            relative.push("..");
+        }
+
+        relative.push(executable.strip_prefix("/").unwrap());
+        // The test executable does not implement the daemon protocol, but it
+        // must start successfully and reach the response-reading stage.
+        let error = spawn_daemon(&relative, b"").unwrap_err();
+        assert!(matches!(error, Error::Daemon(_)), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "clipboard daemon stopped without confirming the copy"
+        );
+    }
+
+    #[test]
+    fn preserves_path_lookup_for_bare_executable_names() {
+        // sh starts via PATH, then fails to open the daemon argument as a script.
+        let error = spawn_daemon(std::path::Path::new("sh"), b"").unwrap_err();
+        assert!(matches!(error, Error::Daemon(_)), "{error}");
+        assert_eq!(
+            error.to_string(),
+            "clipboard daemon stopped without confirming the copy"
+        );
+    }
 
     #[test]
     fn confirmation_times_out_when_probe_stops_responding() {
