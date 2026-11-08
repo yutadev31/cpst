@@ -6,7 +6,10 @@
 
   settings.formatter.tombi = {
     command = lib.getExe pkgs.tombi;
-    options = [ "format" ];
+    options = [
+      "format"
+      "--offline"
+    ];
     includes = [ "*.toml" ];
   };
 
