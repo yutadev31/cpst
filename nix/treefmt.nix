@@ -14,7 +14,7 @@
   };
 
   settings.global.excludes = [
-    "target/**"
     "result/**"
+    "target/**"
   ];
 }
