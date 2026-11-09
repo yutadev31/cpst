@@ -1,89 +1,96 @@
 # cpst
 
-`cpst` is a small, cross-platform command-line toolkit for interacting with the system clipboard.
+A lightweight, cross-platform clipboard utility written in Rust.
 
-It provides two commands:
+`cpst` provides two simple commands for interacting with the system clipboard:
 
-- `cpy` copies UTF-8 text or a PNG image from standard input to the system clipboard.
-- `pst` writes the system clipboard contents to standard output.
+- **`cpy`** — Copy standard input to the clipboard.
+- **`pst`** — Paste clipboard contents to standard output.
+
+Supports UTF-8 text and PNG images.
 
 ## Installation
 
-Install from the workspace root with Cargo:
+### Cargo
 
 ```sh
-cargo install --path .
+cargo install --git https://github.com/yutadev31/cpst
 ```
 
-If you have Nix installed, build the package with:
+### Nix
 
 ```sh
-nix build
-./result/bin/cpy --help
-./result/bin/pst --help
+nix profile install github:yutadev31/cpst
 ```
-
-You can also enter the development shell with `nix develop`.
 
 ## Usage
 
-Copy text to the clipboard:
+### Copy text
 
 ```sh
-printf 'hello, clipboard!\n' | cpy
+echo "Hello, world!" | cpy
 ```
-
-Copy a screenshot on Wayland:
 
 ```sh
-grim - | cpy
+cpy < file.txt
 ```
 
-Paste the clipboard contents:
+### Paste text
 
 ```sh
 pst
 ```
 
-Save a clipboard image as PNG:
+```sh
+pst > file.txt
+```
+
+### Copy an image
+
+```sh
+cpy < image.png
+```
+
+Copy a screenshot using [shot](https://github.com/yutadev31/shot):
+
+```sh
+shot | cpy
+```
+
+### Paste an image
 
 ```sh
 pst > image.png
 ```
 
-Both commands use the regular system clipboard. `cpy` reads all input from standard input and accepts UTF-8 text or PNG images; `pst` writes clipboard text without adding a newline. If text is unavailable and standard output is redirected or piped, `pst` writes the clipboard image as PNG. Images are never written directly to a terminal.
+Images are written as PNG only when standard output is redirected to a file or pipe. Binary image data is never written directly to a terminal.
 
-## Platform support
+When the clipboard provides both text and an image, `pst` prefers text.
 
-The system clipboard is supported on platforms supported by [`arboard`](https://docs.rs/arboard).
+## Platform Support
 
-On Linux and BSD, clipboard access requires a working graphical session and the appropriate X11 or Wayland runtime. When building from source, the Nix development shell and CI configuration provide the Wayland development dependency.
+`cpst` uses [arboard](https://github.com/1Password/arboard) for clipboard access.
+
+It supports Windows, macOS, and Unix-like systems with a supported graphical clipboard backend, including X11 and Wayland.
+
+**Note**: macOS support is currently untested due to a lack of access to macOS hardware.
 
 ## Development
 
-Enter the Nix development shell from the workspace root if Nix is available:
+A Nix development environment is available:
 
 ```sh
 nix develop
 ```
 
-Then format, check, lint, test, and build the package:
+Run checks with Cargo:
 
 ```sh
 cargo fmt --all --check
-cargo check -p cpst --locked
-cargo clippy -p cpst --all-targets --all-features --locked -- -D warnings
-cargo test -p cpst --locked
-cargo build -p cpst --locked
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test
 ```
 
 ## License
 
-This project is licensed under the MIT License. See [`LICENSE.txt`](LICENSE.txt) for the full license text.
-
-## Library errors
-
-`copy`, `paste`, and `run_daemon` return `Result<(), cpst::Error>` instead of `Result<(), String>`. Match error variants when handling failures and use `std::error::Error::source` to inspect local operation failures. Use `to_string()` when a string is needed. Errors reported by the separate clipboard daemon retain its protocol message; an in-process source is unavailable across that process boundary. The CLI and daemon protocol are unchanged.
-
-The `copy` library function requires the path to an executable that handles
-`DAEMON_ARGUMENT` by calling `run_daemon`. The argument is unused on Windows and macOS. On other platforms, input validation occurs in the daemon.
+Licensed under the [MIT License](LICENSE.txt).
