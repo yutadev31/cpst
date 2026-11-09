@@ -45,7 +45,13 @@ Paste the clipboard contents:
 pst
 ```
 
-Both commands use the regular system clipboard. `cpy` reads all input from standard input and accepts UTF-8 text or PNG images; `pst` writes clipboard text without adding a newline.
+Save a clipboard image as PNG:
+
+```sh
+pst > image.png
+```
+
+Both commands use the regular system clipboard. `cpy` reads all input from standard input and accepts UTF-8 text or PNG images; `pst` writes clipboard text without adding a newline. If text is unavailable and standard output is redirected or piped, `pst` writes the clipboard image as PNG. Images are never written directly to a terminal.
 
 ## Platform support
 
