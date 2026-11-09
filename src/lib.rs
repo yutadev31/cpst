@@ -1,5 +1,6 @@
 use arboard::{Clipboard, ImageData};
-use std::io::{self, Read, Write};
+use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+use std::io::{self, IsTerminal, Read, Write};
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod daemon;
@@ -132,36 +133,119 @@ fn parse_content(input: &[u8]) -> Result<Content, Error> {
     Ok(Content::Text(text.to_owned()))
 }
 
-/// Writes clipboard text to stdout.
+/// Writes clipboard text, or a PNG image when stdout is not a terminal.
+/// Text takes precedence when both formats are available.
 ///
 /// # Errors
 /// Returns an error if the clipboard cannot be read or stdout cannot be written.
 pub fn paste() -> Result<(), Error> {
     let mut clipboard =
         Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
-    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
-    let text = daemon::get_text(&mut clipboard)?;
-    #[cfg(any(target_os = "windows", target_os = "macos"))]
-    let text = get_text(&mut clipboard)?;
-    let mut stdout = io::stdout();
-    stdout
-        .write_all(text.as_bytes())
-        .and_then(|()| stdout.flush())
-        .map_err(|error| Error::operation("failed to write stdout", error))
+    let stdout = io::stdout();
+    let content = paste_content(clipboard.get_text(), stdout.is_terminal(), || {
+        clipboard.get_image()
+    })?;
+    write_content(&mut stdout.lock(), content)
 }
 
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn get_text(clipboard: &mut Clipboard) -> Result<String, Error> {
-    clipboard
-        .get_text()
-        .map_err(|error| Error::operation("failed to read clipboard", error))
+fn paste_content(
+    text: Result<String, arboard::Error>,
+    is_terminal: bool,
+    get_image: impl FnOnce() -> Result<ImageData<'static>, arboard::Error>,
+) -> Result<Content, Error> {
+    match text {
+        Ok(text) => Ok(Content::Text(text)),
+        Err(arboard::Error::ContentNotAvailable) if !is_terminal => get_image()
+            .map(Content::Image)
+            .map_err(|error| Error::operation("failed to read clipboard image", error)),
+        Err(error) => Err(Error::operation("failed to read clipboard", error)),
+    }
+}
+
+fn write_content(output: &mut impl Write, content: Content) -> Result<(), Error> {
+    match content {
+        Content::Text(text) => output
+            .write_all(text.as_bytes())
+            .map_err(|error| Error::operation("failed to write stdout", error))?,
+        Content::Image(image) => {
+            let width = u32::try_from(image.width)
+                .map_err(|error| Error::operation("invalid clipboard image width", error))?;
+            let height = u32::try_from(image.height)
+                .map_err(|error| Error::operation("invalid clipboard image height", error))?;
+
+            PngEncoder::new(&mut *output)
+                .write_image(&image.bytes, width, height, ExtendedColorType::Rgba8)
+                .map_err(|error| Error::operation("failed to write PNG to stdout", error))?;
+        }
+    }
+
+    output
+        .flush()
+        .map_err(|error| Error::operation("failed to flush stdout", error))
 }
 
 #[cfg(test)]
 mod tests {
-    use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
-
     use super::*;
+
+    #[test]
+    fn paste_prefers_text() {
+        let content = paste_content(Ok("hello 世界".to_owned()), false, || {
+            panic!("must not request image when text is available")
+        })
+        .unwrap();
+        let mut output = Vec::new();
+        write_content(&mut output, content).unwrap();
+        assert_eq!(output, "hello 世界".as_bytes());
+    }
+
+    #[test]
+    fn paste_round_trips_image_as_png_without_a_terminal() {
+        let pixels = vec![255, 0, 0, 128, 0, 255, 0, 255];
+        let content = paste_content(Err(arboard::Error::ContentNotAvailable), false, || {
+            Ok(ImageData {
+                width: 2,
+                height: 1,
+                bytes: pixels.clone().into(),
+            })
+        })
+        .unwrap();
+        let mut output = Vec::new();
+        write_content(&mut output, content).unwrap();
+        let Content::Image(image) = parse_content(&output).unwrap() else {
+            panic!("expected PNG image");
+        };
+        assert_eq!((image.width, image.height), (2, 1));
+        assert_eq!(image.bytes.as_ref(), pixels);
+    }
+
+    #[test]
+    fn paste_does_not_request_images_for_a_terminal_or_clipboard_failure() {
+        for (error, is_terminal) in [
+            (arboard::Error::ContentNotAvailable, true),
+            (arboard::Error::ClipboardOccupied, false),
+        ] {
+            assert!(
+                paste_content(Err(error), is_terminal, || {
+                    panic!("must not request image")
+                })
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn paste_reports_image_read_and_output_failures() {
+        let error = paste_content(Err(arboard::Error::ContentNotAvailable), false, || {
+            Err(arboard::Error::ContentNotAvailable)
+        })
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("failed to read clipboard image"));
+
+        let error = write_content(&mut &mut [0_u8; 0][..], Content::Text("hello".to_owned()));
+        assert!(error.is_err());
+    }
 
     #[test]
     fn parses_text() {

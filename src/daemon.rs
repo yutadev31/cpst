@@ -220,14 +220,6 @@ fn spawn_reaped(command: &mut Command) -> Result<(ChildStdin, ChildStdout), Erro
     ))
 }
 
-pub(super) fn get_text(clipboard: &mut Clipboard) -> Result<String, Error> {
-    clipboard
-        .get()
-        .clipboard(LinuxClipboardKind::Clipboard)
-        .text()
-        .map_err(|error| Error::operation("failed to read clipboard", error))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
