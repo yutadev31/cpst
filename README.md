@@ -91,6 +91,12 @@ cargo clippy --all-targets --all-features -- -D warnings
 cargo test
 ```
 
+Build the release binary:
+
+```sh
+cargo build --release
+```
+
 ## License
 
 Licensed under the [MIT License](LICENSE.txt).
