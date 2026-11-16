@@ -15,8 +15,8 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    /// Input is neither UTF-8 text nor a PNG image.
-    #[error("stdin is neither UTF-8 text nor a PNG image")]
+    /// Input is neither UTF-8 text nor a PNG or JPEG image.
+    #[error("stdin is neither UTF-8 text nor a PNG or JPEG image")]
     InvalidText(#[source] std::str::Utf8Error),
     /// The provider did not confirm ownership before the deadline.
     #[error("timed out waiting to confirm clipboard copy{detail}", detail = .0.as_ref().map(|error| format!(": {error}")).unwrap_or_default())]
@@ -47,6 +47,7 @@ impl From<&str> for Error {
 pub const DAEMON_ARGUMENT: &str = "__internal_daemonize";
 
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+const JPEG_SIGNATURE: &[u8] = b"\xff\xd8\xff";
 
 enum Content {
     Text(String),
@@ -56,7 +57,7 @@ enum Content {
 /// Outside Windows and macOS, `daemon_executable` must handle [`DAEMON_ARGUMENT`] by calling [`run_daemon`].
 /// The executable argument is unused on Windows and macOS.
 ///
-/// Copies UTF-8 text or PNG pixels from stdin to the clipboard.
+/// Copies UTF-8 text or PNG/JPEG pixels from stdin to the clipboard.
 ///
 /// # Errors
 /// Returns an error if input cannot be read or decoded, or clipboard ownership fails.
@@ -117,9 +118,17 @@ fn read_stdin() -> Result<Vec<u8>, Error> {
 }
 
 fn parse_content(input: &[u8]) -> Result<Content, Error> {
-    if input.starts_with(PNG_SIGNATURE) {
-        let image = image::load_from_memory_with_format(input, image::ImageFormat::Png)
-            .map_err(|error| Error::operation("failed to decode PNG from stdin", error))?
+    let format = if input.starts_with(PNG_SIGNATURE) {
+        Some((image::ImageFormat::Png, "failed to decode PNG from stdin"))
+    } else if input.starts_with(JPEG_SIGNATURE) {
+        Some((image::ImageFormat::Jpeg, "failed to decode JPEG from stdin"))
+    } else {
+        None
+    };
+
+    if let Some((format, operation)) = format {
+        let image = image::load_from_memory_with_format(input, format)
+            .map_err(|error| Error::operation(operation, error))?
             .into_rgba8();
         let (width, height) = image.dimensions();
         return Ok(Content::Image(ImageData {
@@ -271,12 +280,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_jpeg_as_rgba_and_pastes_as_png() {
+        for color in [ExtendedColorType::Rgb8, ExtendedColorType::L8] {
+            let pixels = vec![42; color.bits_per_pixel() as usize / 8 * 2];
+            let mut jpeg = Vec::new();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 100)
+                .write_image(&pixels, 2, 1, color)
+                .unwrap();
+
+            let Content::Image(image) = parse_content(&jpeg).unwrap() else {
+                panic!("expected JPEG image");
+            };
+            assert_eq!((image.width, image.height), (2, 1));
+            assert_eq!(image.bytes.len(), 8);
+            for pixel in image.bytes.as_chunks::<4>().0 {
+                assert!(pixel[..3].iter().all(|&value| value.abs_diff(42) <= 1));
+                assert_eq!(pixel[3], 255);
+            }
+
+            let expected = image.bytes.to_vec();
+            let mut output = Vec::new();
+            write_content(&mut output, Content::Image(image)).unwrap();
+            assert!(output.starts_with(PNG_SIGNATURE));
+            let Content::Image(image) = parse_content(&output).unwrap() else {
+                panic!("expected PNG image");
+            };
+            assert_eq!((image.width, image.height), (2, 1));
+            assert_eq!(image.bytes.as_ref(), expected);
+        }
+    }
+
+    #[test]
     fn reports_invalid_input() {
         use std::error::Error as _;
 
         let png_error = parse_content(b"\x89PNG\r\n\x1a\ninvalid").err().unwrap();
         assert!(png_error.to_string().contains("decode PNG"));
         assert!(png_error.source().unwrap().is::<image::ImageError>());
+
+        let jpeg_error = parse_content(b"\xff\xd8\xffinvalid").err().unwrap();
+        assert!(jpeg_error.to_string().contains("decode JPEG"));
+        assert!(jpeg_error.source().unwrap().is::<image::ImageError>());
 
         let text_error = parse_content(b"\xff").err().unwrap();
         assert!(matches!(text_error, Error::InvalidText(_)));
