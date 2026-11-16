@@ -283,4 +283,71 @@ mod tests {
         assert!(text_error.to_string().contains("neither UTF-8"));
         assert!(text_error.source().unwrap().is::<std::str::Utf8Error>());
     }
+
+    #[test]
+    fn preserves_text_boundaries() {
+        for text in ["", "hello 世界\n\n"] {
+            let mut output = Vec::new();
+            write_content(&mut output, parse_content(text.as_bytes()).unwrap()).unwrap();
+            assert_eq!(output, text.as_bytes());
+        }
+    }
+
+    #[test]
+    fn converts_rgb_and_grayscale_to_rgba() {
+        for (color, pixels, expected) in [
+            (ExtendedColorType::Rgb8, vec![10, 20, 30], [10, 20, 30, 255]),
+            (ExtendedColorType::L8, vec![42], [42, 42, 42, 255]),
+        ] {
+            let mut png = Vec::new();
+            PngEncoder::new(&mut png)
+                .write_image(&pixels, 1, 1, color)
+                .unwrap();
+            let Content::Image(image) = parse_content(&png).unwrap() else {
+                panic!("expected image")
+            };
+            assert_eq!((image.width, image.height), (1, 1));
+            assert_eq!(image.bytes.as_ref(), expected);
+        }
+    }
+
+    #[test]
+    fn reports_png_write_and_flush_failures() {
+        use std::error::Error as _;
+        struct Writer(bool);
+
+        impl Write for Writer {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                if self.0 {
+                    Err(io::Error::other("write failed"))
+                } else {
+                    Ok(bytes.len())
+                }
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Err(io::Error::other("flush failed"))
+            }
+        }
+
+        for fail_write in [true, false] {
+            let image = ImageData {
+                width: 1,
+                height: 1,
+                bytes: vec![0, 0, 0, 255].into(),
+            };
+            let error = write_content(&mut Writer(fail_write), Content::Image(image)).unwrap_err();
+            let operation = if fail_write {
+                "failed to write PNG to stdout"
+            } else {
+                "failed to flush stdout"
+            };
+            assert!(error.to_string().contains(operation), "{error}");
+            if fail_write {
+                assert!(error.source().unwrap().is::<image::ImageError>());
+            } else {
+                assert!(error.source().unwrap().is::<io::Error>());
+            }
+        }
+    }
 }
