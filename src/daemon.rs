@@ -325,4 +325,83 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+
+    #[test]
+    fn confirmation_handles_termination_and_open_failure() {
+        for case in 0..4 {
+            let (sender, provider) = mpsc::sync_channel(1);
+            let (probe_sender, probe) = mpsc::sync_channel(1);
+            match case {
+                0 => sender.send(Ok(())).unwrap(),
+                1 => drop(sender),
+                2 => drop(probe_sender),
+                _ => probe_sender
+                    .send(ProbeEvent::OpenFailed(arboard::Error::ClipboardOccupied))
+                    .unwrap(),
+            }
+            let error =
+                wait_for_confirmation(&provider, &probe, Duration::from_secs(1)).unwrap_err();
+            let expected = [
+                "clipboard ownership ended before confirmation",
+                "clipboard provider stopped before confirmation",
+                "clipboard probe stopped before confirmation",
+                "failed to open clipboard",
+            ][case];
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[test]
+    fn confirmation_accepts_match_after_mismatch() {
+        let (_sender, provider) = mpsc::sync_channel(1);
+        let (sender, probe) = mpsc::sync_channel(2);
+        sender.send(ProbeEvent::Checked(Ok(false))).unwrap();
+        sender.send(ProbeEvent::Checked(Ok(true))).unwrap();
+        wait_for_confirmation(&provider, &probe, Duration::from_secs(1)).unwrap();
+    }
+
+    #[test]
+    fn confirmation_times_out_without_errors() {
+        let (_sender, provider) = mpsc::sync_channel(1);
+        let (_sender2, probe) = mpsc::sync_channel(1);
+        assert!(matches!(
+            wait_for_confirmation(&provider, &probe, Duration::from_millis(10)),
+            Err(Error::ConfirmationTimeout(None))
+        ));
+    }
+
+    #[test]
+    fn reports_missing_executable() {
+        assert!(matches!(
+            spawn_daemon(std::path::Path::new("/nonexistent-cpst-test/daemon"), b""),
+            Err(Error::Operation {
+                operation: "failed to start clipboard daemon",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn handles_daemon_protocol() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = std::env::temp_dir().join(format!("cpst-protocol-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let script = directory.join("daemon");
+        for response in ["OK", "ERR test failure", "invalid", ""] {
+            std::fs::write(&script, format!("#!/bin/sh\n[ \"$1\" = '__internal_daemonize' ] || exit 2\ninput=$(cat)\n[ \"$input\" = 'payload' ] || exit 3\n[ -z '{response}' ] || printf '%s\\n' '{response}'\n")).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let result = spawn_daemon(&script, b"payload");
+            if response == "OK" {
+                result.unwrap();
+            } else {
+                let expected = if response.starts_with("ERR ") {
+                    "test failure"
+                } else {
+                    "clipboard daemon stopped without confirming the copy"
+                };
+                assert_eq!(result.unwrap_err().to_string(), expected);
+            }
+        }
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 }
