@@ -390,7 +390,7 @@ mod tests {
         for response in ["OK", "ERR test failure", "invalid", ""] {
             std::fs::write(&script, format!("#!/bin/sh\n[ \"$1\" = '__internal_daemonize' ] || exit 2\ninput=$(cat)\n[ \"$input\" = 'payload' ] || exit 3\n[ -z '{response}' ] || printf '%s\\n' '{response}'\n")).unwrap();
             std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-            let result = spawn_daemon(&script, b"payload");
+            let result = spawn_generated_script(&script, b"payload");
             if response == "OK" {
                 result.unwrap();
             } else {
@@ -403,5 +403,25 @@ mod tests {
             }
         }
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    fn spawn_generated_script(script: &std::path::Path, input: &[u8]) -> Result<(), Error> {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let result = spawn_daemon(script, input);
+            // A freshly written executable can transiently remain busy on Linux.
+            let busy = matches!(
+                &result,
+                Err(Error::Operation { operation: "failed to start clipboard daemon", source })
+                    if source.downcast_ref::<io::Error>().is_some_and(|error| {
+                        error.kind() == io::ErrorKind::ExecutableFileBusy
+                    })
+            );
+            if !busy || Instant::now() >= deadline {
+                return result;
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
 }
