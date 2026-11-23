@@ -73,6 +73,16 @@ When the clipboard provides both text and an image, `pst` prefers text.
 
 ## Platform Support
 
+### SSH
+
+On Unix, `cpy` and `pst` use OSC 52 to access the local terminal's clipboard
+when `SSH_CONNECTION` or `SSH_CLIENT` is set. This requires an SSH session
+with a terminal (use `ssh -t` when running a remote command) and supports UTF-8
+text. Enable OSC 52 clipboard access in your terminal, including read access
+for `pst`. Redirection still works, for example `pst > file.txt`.
+
+### Local clipboard
+
 `cpst` uses [arboard](https://github.com/1Password/arboard) for clipboard access.
 
 It supports Windows, macOS, and Unix-like systems with a supported graphical clipboard backend, including X11 and Wayland.
