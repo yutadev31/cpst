@@ -4,6 +4,8 @@ use std::io::{self, IsTerminal, Read, Write};
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 mod daemon;
+#[cfg(unix)]
+mod osc52;
 
 /// A clipboard operation failure, retaining its underlying cause when available.
 #[derive(Debug, thiserror::Error)]
@@ -63,6 +65,11 @@ enum Content {
 /// Returns an error if input cannot be read or decoded, or clipboard ownership fails.
 pub fn copy(daemon_executable: &std::path::Path) -> Result<(), Error> {
     let input = read_stdin()?;
+
+    #[cfg(unix)]
+    if osc52::in_ssh_session() {
+        return osc52::copy(&input);
+    }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
@@ -148,6 +155,12 @@ fn parse_content(input: &[u8]) -> Result<Content, Error> {
 /// # Errors
 /// Returns an error if the clipboard cannot be read or stdout cannot be written.
 pub fn paste() -> Result<(), Error> {
+    #[cfg(unix)]
+    if osc52::in_ssh_session() {
+        let text = osc52::paste()?;
+        return write_content(&mut io::stdout().lock(), Content::Text(text));
+    }
+
     let mut clipboard =
         Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
     let stdout = io::stdout();

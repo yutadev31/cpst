@@ -11,5 +11,9 @@ clap = { version = "4.6.7", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 thiserror = "2.0.21"
 
+[target."cfg(unix)".dependencies]
+base64 = "0.22"
+nix = { version = "0.31", features = ["term"] }
+
 [profile.release]
 lto = "thin"

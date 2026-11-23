@@ -8,6 +8,8 @@ use std::{
 #[test]
 fn copy_reports_clipboard_connection_failure() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_cpy"))
+        .env_remove("SSH_CONNECTION")
+        .env_remove("SSH_CLIENT")
         .env_remove("DISPLAY")
         .env_remove("WAYLAND_DISPLAY")
         .env_remove("XDG_RUNTIME_DIR")
