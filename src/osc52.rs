@@ -91,6 +91,10 @@ fn read_response(terminal: &mut File) -> Result<Vec<u8>, Error> {
         };
 
         for &byte in &buffer[..count] {
+            if byte == b'\x03' {
+                return Err("OSC 52 paste cancelled by Ctrl-C".into());
+            }
+
             if matched < PREFIX.len() {
                 matched = if byte == PREFIX[matched] {
                     matched + 1
