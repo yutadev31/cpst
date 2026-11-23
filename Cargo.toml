@@ -13,7 +13,7 @@ thiserror = "2.0.21"
 
 [target."cfg(unix)".dependencies]
 base64 = "0.22"
-libc = "0.2"
+nix = { version = "0.31", features = ["term"] }
 
 [profile.release]
 lto = "thin"

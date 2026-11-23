@@ -1,9 +1,11 @@
 use base64::{Engine, engine::general_purpose::STANDARD};
+use nix::{
+    errno::Errno,
+    sys::termios::{SetArg, SpecialCharacterIndices, Termios, cfmakeraw, tcgetattr, tcsetattr},
+};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read, Write},
-    mem::MaybeUninit,
-    os::fd::AsRawFd,
     time::{Duration, Instant},
 };
 
@@ -28,27 +30,18 @@ pub(crate) fn copy(input: &[u8]) -> Result<(), Error> {
 
 pub(crate) fn paste() -> Result<String, Error> {
     let mut tty = open_terminal()?;
-    let fd = tty.as_raw_fd();
-    let mut settings = MaybeUninit::uninit();
-
-    // SAFETY: fd is open and tcgetattr initializes settings on success.
-    if unsafe { libc::tcgetattr(fd, settings.as_mut_ptr()) } == -1 {
-        return Err(Error::operation(
-            "failed to read terminal settings",
-            io::Error::last_os_error(),
-        ));
-    }
-    let original = unsafe { settings.assume_init() };
-    let mut raw = original;
+    let original = tcgetattr(&tty)
+        .map_err(|error| Error::operation("failed to read terminal settings", error))?;
+    let mut raw = original.clone();
 
     // OSC replies arrive without a newline and must not be echoed.
-    unsafe { libc::cfmakeraw(&mut raw) };
-    raw.c_cc[libc::VMIN] = 0;
-    raw.c_cc[libc::VTIME] = 1;
-    set_terminal(fd, &raw)?;
+    cfmakeraw(&mut raw);
+    raw.control_chars[SpecialCharacterIndices::VMIN as usize] = 0;
+    raw.control_chars[SpecialCharacterIndices::VTIME as usize] = 1;
+    set_terminal(&tty, &raw)?;
 
     let response = send(&mut tty, "?").and_then(|()| read_response(&mut tty));
-    set_terminal(fd, &original)?;
+    set_terminal(&tty, &original)?;
 
     let bytes = STANDARD
         .decode(response?)
@@ -73,15 +66,12 @@ fn send(terminal: &mut File, payload: &str) -> Result<(), Error> {
         .map_err(|error| Error::operation("failed to send OSC 52 to terminal", error))
 }
 
-fn set_terminal(fd: std::os::fd::RawFd, settings: &libc::termios) -> Result<(), Error> {
-    // SAFETY: fd belongs to the open terminal and settings is initialized.
+fn set_terminal(tty: &File, settings: &Termios) -> Result<(), Error> {
     loop {
-        if unsafe { libc::tcsetattr(fd, libc::TCSANOW, settings) } == 0 {
-            return Ok(());
-        }
-        let error = io::Error::last_os_error();
-        if error.kind() != io::ErrorKind::Interrupted {
-            return Err(Error::operation("failed to set terminal settings", error));
+        match tcsetattr(tty, SetArg::TCSANOW, settings) {
+            Ok(()) => return Ok(()),
+            Err(Errno::EINTR) => continue,
+            Err(error) => return Err(Error::operation("failed to set terminal settings", error)),
         }
     }
 }
