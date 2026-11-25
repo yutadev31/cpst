@@ -7,7 +7,7 @@ A lightweight, cross-platform clipboard utility written in Rust.
 - **`cpy`** — Copy standard input to the clipboard.
 - **`pst`** — Paste clipboard contents to standard output.
 
-Supports UTF-8 text and PNG/JPEG/WebP image input. Images are pasted as PNG.
+Supports UTF-8 text and PNG/JPEG/WebP image input and output.
 
 ## Installation
 
@@ -71,9 +71,25 @@ shot | cpy
 pst > image.png
 ```
 
-Images are written as PNG only when standard output is redirected to a file or pipe. Binary image data is never written directly to a terminal.
+Redirect standard output to a file or pipe to paste images.
 
-When the clipboard provides both text and an image, `pst` prefers text.
+### Select a format
+
+Both commands accept `-f` or `--format`.
+
+| Format | `cpy` input | `pst` output |
+| --- | --- | --- |
+| `auto` (default) | Detect PNG, JPEG, or WebP, then try UTF-8 text | Prefer text, otherwise PNG when redirected |
+| `text` | Require UTF-8 text | Require clipboard text |
+| `image` | Detect PNG, JPEG, or WebP and require an image | Require a clipboard image and write PNG |
+| `png`, `jpeg` (`jpg`), `webp` | Decode stdin using the selected format | Require a clipboard image and encode it in the selected format |
+
+```sh
+cpy --format png < screenshot.png
+pst --format webp > screenshot.webp
+```
+
+PNG and lossless WebP preserve transparency. JPEG output drops the alpha channel.
 
 ## Platform Support
 

@@ -6,8 +6,8 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) fn run(input: Vec<u8>) -> Result<(), Error> {
-    let content = parse_content(&input)?;
+pub(super) fn run(input: Vec<u8>, format: Format) -> Result<(), Error> {
+    let content = parse_content(&input, format)?;
     drop(input);
     let expected = std::sync::Arc::new(content);
     let content = expected.clone();
@@ -140,7 +140,12 @@ fn selection_matches(
     }
 }
 
-pub(super) fn spawn_daemon(executable: &std::path::Path, input: &[u8]) -> Result<(), Error> {
+pub(super) fn spawn_daemon(
+    executable: &std::path::Path,
+    input: &[u8],
+    format: Format,
+) -> Result<(), Error> {
+    use clap::ValueEnum;
     use std::io::BufRead;
 
     // Preserve PATH lookup for bare executable names, but resolve relative paths
@@ -160,6 +165,12 @@ pub(super) fn spawn_daemon(executable: &std::path::Path, input: &[u8]) -> Result
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .current_dir("/");
+    if !matches!(format, Format::Auto)
+        && let Some(value) = format.to_possible_value()
+    {
+        command.arg("--format").arg(value.get_name());
+    }
+
     let (mut stdin, stdout) = spawn_reaped(&mut command)?;
     stdin
         .write_all(input)
@@ -238,7 +249,7 @@ mod tests {
         relative.push(executable.strip_prefix("/").unwrap());
         // The test executable does not implement the daemon protocol, but it
         // must start successfully and reach the response-reading stage.
-        let error = spawn_daemon(&relative, b"").unwrap_err();
+        let error = spawn_daemon(&relative, b"", Format::Auto).unwrap_err();
         assert!(matches!(error, Error::Daemon(_)), "{error}");
         assert_eq!(
             error.to_string(),
@@ -249,7 +260,7 @@ mod tests {
     #[test]
     fn preserves_path_lookup_for_bare_executable_names() {
         // sh starts via PATH, then fails to open the daemon argument as a script.
-        let error = spawn_daemon(std::path::Path::new("sh"), b"").unwrap_err();
+        let error = spawn_daemon(std::path::Path::new("sh"), b"", Format::Auto).unwrap_err();
         assert!(matches!(error, Error::Daemon(_)), "{error}");
         assert_eq!(
             error.to_string(),
@@ -373,7 +384,11 @@ mod tests {
     #[test]
     fn reports_missing_executable() {
         assert!(matches!(
-            spawn_daemon(std::path::Path::new("/nonexistent-cpst-test/daemon"), b""),
+            spawn_daemon(
+                std::path::Path::new("/nonexistent-cpst-test/daemon"),
+                b"",
+                Format::Auto
+            ),
             Err(Error::Operation {
                 operation: "failed to start clipboard daemon",
                 ..
@@ -408,7 +423,7 @@ mod tests {
     fn spawn_generated_script(script: &std::path::Path, input: &[u8]) -> Result<(), Error> {
         let deadline = Instant::now() + Duration::from_secs(1);
         loop {
-            let result = spawn_daemon(script, input);
+            let result = spawn_daemon(script, input, Format::Auto);
             // A freshly written executable can transiently remain busy on Linux.
             let busy = matches!(
                 &result,

@@ -7,7 +7,29 @@ use std::{
 
 #[test]
 fn copy_reports_clipboard_connection_failure() {
+    let output = copy(&[]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("failed to open clipboard"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn copy_passes_explicit_format_to_daemon() {
+    let output = copy(&["--format", "jpg"]);
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("failed to decode JPEG from stdin"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn copy(args: &[&str]) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_cpy"))
+        .args(args)
         .env_remove("SSH_CONNECTION")
         .env_remove("SSH_CLIENT")
         .env_remove("DISPLAY")
@@ -20,11 +42,5 @@ fn copy_reports_clipboard_connection_failure() {
         .unwrap();
     child.stdin.take().unwrap().write_all(b"hello").unwrap();
 
-    let output = child.wait_with_output().unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("failed to open clipboard"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    child.wait_with_output().unwrap()
 }
