@@ -12,8 +12,8 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 thiserror = "2.0.21"
 
 [target."cfg(unix)".dependencies]
-base64 = "0.22"
-nix = { version = "0.31", features = ["term"] }
+base64 = "0.23"
+nix = { version = "0.32", features = ["term"] }
 
 [profile.release]
 lto = "thin"
