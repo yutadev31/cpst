@@ -7,7 +7,7 @@ A lightweight, cross-platform clipboard utility written in Rust.
 - **`cpy`** — Copy standard input to the clipboard.
 - **`pst`** — Paste clipboard contents to standard output.
 
-Supports UTF-8 text and PNG/JPEG image input. Images are pasted as PNG.
+Supports UTF-8 text and PNG/JPEG/WebP image input. Images are pasted as PNG.
 
 ## Installation
 
@@ -53,6 +53,10 @@ cpy < image.png
 
 ```sh
 cpy < image.jpg
+```
+
+```sh
+cpy < image.webp
 ```
 
 Copy a screenshot using [shot](https://github.com/yutadev31/shot):
