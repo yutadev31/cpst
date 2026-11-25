@@ -17,8 +17,8 @@ pub enum Error {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
-    /// Input is neither UTF-8 text nor a PNG or JPEG image.
-    #[error("stdin is neither UTF-8 text nor a PNG or JPEG image")]
+    /// Input is neither UTF-8 text nor a PNG, JPEG, or WebP image.
+    #[error("stdin is neither UTF-8 text nor a PNG, JPEG, or WebP image")]
     InvalidText(#[source] std::str::Utf8Error),
     /// The provider did not confirm ownership before the deadline.
     #[error("timed out waiting to confirm clipboard copy{detail}", detail = .0.as_ref().map(|error| format!(": {error}")).unwrap_or_default())]
@@ -59,7 +59,7 @@ enum Content {
 /// Outside Windows and macOS, `daemon_executable` must handle [`DAEMON_ARGUMENT`] by calling [`run_daemon`].
 /// The executable argument is unused on Windows and macOS.
 ///
-/// Copies UTF-8 text or PNG/JPEG pixels from stdin to the clipboard.
+/// Copies UTF-8 text or PNG/JPEG/WebP pixels from stdin to the clipboard.
 ///
 /// # Errors
 /// Returns an error if input cannot be read or decoded, or clipboard ownership fails.
@@ -129,6 +129,8 @@ fn parse_content(input: &[u8]) -> Result<Content, Error> {
         Some((image::ImageFormat::Png, "failed to decode PNG from stdin"))
     } else if input.starts_with(JPEG_SIGNATURE) {
         Some((image::ImageFormat::Jpeg, "failed to decode JPEG from stdin"))
+    } else if input.starts_with(b"RIFF") && input.get(8..12) == Some(b"WEBP") {
+        Some((image::ImageFormat::WebP, "failed to decode WebP from stdin"))
     } else {
         None
     };
@@ -324,6 +326,21 @@ mod tests {
     }
 
     #[test]
+    fn parses_webp_as_rgba() {
+        let pixels = [255, 0, 0, 255, 0, 0, 255, 128];
+        let mut webp = Vec::new();
+        image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
+            .write_image(&pixels, 2, 1, ExtendedColorType::Rgba8)
+            .unwrap();
+
+        let Content::Image(image) = parse_content(&webp).unwrap() else {
+            panic!("expected WebP image");
+        };
+        assert_eq!((image.width, image.height), (2, 1));
+        assert_eq!(image.bytes.as_ref(), pixels);
+    }
+
+    #[test]
     fn reports_invalid_input() {
         use std::error::Error as _;
 
@@ -334,6 +351,10 @@ mod tests {
         let jpeg_error = parse_content(b"\xff\xd8\xffinvalid").err().unwrap();
         assert!(jpeg_error.to_string().contains("decode JPEG"));
         assert!(jpeg_error.source().unwrap().is::<image::ImageError>());
+
+        let webp_error = parse_content(b"RIFF\x04\0\0\0WEBP").err().unwrap();
+        assert!(webp_error.to_string().contains("decode WebP"));
+        assert!(webp_error.source().unwrap().is::<image::ImageError>());
 
         let text_error = parse_content(b"\xff").err().unwrap();
         assert!(matches!(text_error, Error::InvalidText(_)));
