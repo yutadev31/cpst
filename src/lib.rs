@@ -51,6 +51,25 @@ pub const DAEMON_ARGUMENT: &str = "__internal_daemonize";
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 const JPEG_SIGNATURE: &[u8] = b"\xff\xd8\xff";
 
+/// Selects the content type and image encoding.
+#[derive(Clone, Copy, Debug, Default, clap::ValueEnum)]
+pub enum Format {
+    #[default]
+    Auto,
+    Text,
+    Image,
+    Png,
+    #[value(alias = "jpg")]
+    Jpeg,
+    Webp,
+}
+
+impl Format {
+    fn requires_image(self) -> bool {
+        !matches!(self, Self::Auto | Self::Text)
+    }
+}
+
 enum Content {
     Text(String),
     Image(ImageData<'static>),
@@ -64,22 +83,30 @@ enum Content {
 /// # Errors
 /// Returns an error if input cannot be read or decoded, or clipboard ownership fails.
 pub fn copy(daemon_executable: &std::path::Path) -> Result<(), Error> {
+    copy_with_format(daemon_executable, Format::Auto)
+}
+
+/// Copies stdin using the requested format.
+/// # Errors
+/// Returns an error if input cannot be read, decoded, or copied.
+pub fn copy_with_format(daemon_executable: &std::path::Path, format: Format) -> Result<(), Error> {
     let input = read_stdin()?;
 
     #[cfg(unix)]
     if osc52::in_ssh_session() {
+        require_osc52_text(format)?;
         return osc52::copy(&input);
     }
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        daemon::spawn_daemon(daemon_executable, &input)
+        daemon::spawn_daemon(daemon_executable, &input, format)
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         let _ = daemon_executable;
-        let content = parse_content(&input)?;
+        let content = parse_content(&input, format)?;
         let mut clipboard = Clipboard::new()
             .map_err(|error| Error::operation("failed to open clipboard", error))?;
 
@@ -100,16 +127,23 @@ pub fn copy(daemon_executable: &std::path::Path) -> Result<(), Error> {
 /// # Errors
 /// Returns an error if the provider cannot start, serve, or confirm the selection.
 pub fn run_daemon() -> Result<(), Error> {
+    run_daemon_with_format(Format::Auto)
+}
+
+/// Runs the clipboard provider with the requested input format.
+/// # Errors
+/// Returns an error if the provider cannot start, serve, or confirm the selection.
+pub fn run_daemon_with_format(format: Format) -> Result<(), Error> {
     let input = read_stdin()?;
 
     #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
-        daemon::run(input)
+        daemon::run(input, format)
     }
 
     #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
-        let _ = input;
+        let _ = (input, format);
         Err(Error::Daemon(
             "the clipboard daemon is not supported on Windows or macOS".to_owned(),
         ))
@@ -124,19 +158,25 @@ fn read_stdin() -> Result<Vec<u8>, Error> {
     Ok(input)
 }
 
-fn parse_content(input: &[u8]) -> Result<Content, Error> {
-    let format = if input.starts_with(PNG_SIGNATURE) {
-        Some((image::ImageFormat::Png, "failed to decode PNG from stdin"))
-    } else if input.starts_with(JPEG_SIGNATURE) {
-        Some((image::ImageFormat::Jpeg, "failed to decode JPEG from stdin"))
-    } else if input.starts_with(b"RIFF") && input.get(8..12) == Some(b"WEBP") {
-        Some((image::ImageFormat::WebP, "failed to decode WebP from stdin"))
-    } else {
-        None
+fn parse_content(input: &[u8], format: Format) -> Result<Content, Error> {
+    use image::ImageFormat::{Jpeg, Png, WebP};
+
+    let image_format = match format {
+        Format::Text => None,
+        Format::Png => Some(Png),
+        Format::Jpeg => Some(Jpeg),
+        Format::Webp => Some(WebP),
+        Format::Auto | Format::Image => detect_image_format(input),
     };
 
-    if let Some((format, operation)) = format {
-        let image = image::load_from_memory_with_format(input, format)
+    if let Some(image_format) = image_format {
+        let operation = match image_format {
+            Png => "failed to decode PNG from stdin",
+            Jpeg => "failed to decode JPEG from stdin",
+            WebP => "failed to decode WebP from stdin",
+            _ => "failed to decode image from stdin",
+        };
+        let image = image::load_from_memory_with_format(input, image_format)
             .map_err(|error| Error::operation(operation, error))?
             .into_rgba8();
         let (width, height) = image.dimensions();
@@ -147,8 +187,36 @@ fn parse_content(input: &[u8]) -> Result<Content, Error> {
         }));
     }
 
-    let text = std::str::from_utf8(input).map_err(Error::InvalidText)?;
+    if format.requires_image() {
+        return Err("stdin is not a PNG, JPEG, or WebP image".into());
+    }
+
+    let text = std::str::from_utf8(input).map_err(|error| match format {
+        Format::Text => Error::operation("stdin is not UTF-8 text", error),
+        _ => Error::InvalidText(error),
+    })?;
     Ok(Content::Text(text.to_owned()))
+}
+
+fn detect_image_format(input: &[u8]) -> Option<image::ImageFormat> {
+    if input.starts_with(PNG_SIGNATURE) {
+        Some(image::ImageFormat::Png)
+    } else if input.starts_with(JPEG_SIGNATURE) {
+        Some(image::ImageFormat::Jpeg)
+    } else if input.starts_with(b"RIFF") && input.get(8..12) == Some(b"WEBP") {
+        Some(image::ImageFormat::WebP)
+    } else {
+        None
+    }
+}
+
+#[cfg(unix)]
+fn require_osc52_text(format: Format) -> Result<(), Error> {
+    if format.requires_image() {
+        return Err("OSC 52 supports only text".into());
+    }
+
+    Ok(())
 }
 
 /// Writes clipboard text, or a PNG image when stdout is not a terminal.
@@ -157,36 +225,58 @@ fn parse_content(input: &[u8]) -> Result<Content, Error> {
 /// # Errors
 /// Returns an error if the clipboard cannot be read or stdout cannot be written.
 pub fn paste() -> Result<(), Error> {
+    paste_with_format(Format::Auto)
+}
+
+/// Writes clipboard content in the requested format.
+/// # Errors
+/// Returns an error if the content is unavailable or cannot be written.
+pub fn paste_with_format(format: Format) -> Result<(), Error> {
     #[cfg(unix)]
     if osc52::in_ssh_session() {
+        require_osc52_text(format)?;
         let text = osc52::paste()?;
-        return write_content(&mut io::stdout().lock(), Content::Text(text));
+        return write_content(&mut io::stdout().lock(), Content::Text(text), format);
+    }
+
+    let stdout = io::stdout();
+    let is_terminal = stdout.is_terminal();
+    if format.requires_image() && is_terminal {
+        return Err("redirect stdout to a file or pipe to paste an image".into());
     }
 
     let mut clipboard =
         Clipboard::new().map_err(|error| Error::operation("failed to open clipboard", error))?;
-    let stdout = io::stdout();
-    let content = paste_content(clipboard.get_text(), stdout.is_terminal(), || {
-        clipboard.get_image()
-    })?;
-    write_content(&mut stdout.lock(), content)
+    let content = if format.requires_image() {
+        read_clipboard_image(clipboard.get_image())?
+    } else {
+        let text_only = is_terminal || matches!(format, Format::Text);
+        paste_content(clipboard.get_text(), text_only, || clipboard.get_image())?
+    };
+    write_content(&mut stdout.lock(), content, format)
 }
 
 fn paste_content(
     text: Result<String, arboard::Error>,
-    is_terminal: bool,
+    text_only: bool,
     get_image: impl FnOnce() -> Result<ImageData<'static>, arboard::Error>,
 ) -> Result<Content, Error> {
     match text {
         Ok(text) => Ok(Content::Text(text)),
-        Err(arboard::Error::ContentNotAvailable) if !is_terminal => get_image()
-            .map(Content::Image)
-            .map_err(|error| Error::operation("failed to read clipboard image", error)),
+        Err(arboard::Error::ContentNotAvailable) if !text_only => read_clipboard_image(get_image()),
         Err(error) => Err(Error::operation("failed to read clipboard", error)),
     }
 }
 
-fn write_content(output: &mut impl Write, content: Content) -> Result<(), Error> {
+fn read_clipboard_image(
+    image: Result<ImageData<'static>, arboard::Error>,
+) -> Result<Content, Error> {
+    image
+        .map(Content::Image)
+        .map_err(|error| Error::operation("failed to read clipboard image", error))
+}
+
+fn write_content(output: &mut impl Write, content: Content, format: Format) -> Result<(), Error> {
     match content {
         Content::Text(text) => output
             .write_all(text.as_bytes())
@@ -197,9 +287,24 @@ fn write_content(output: &mut impl Write, content: Content) -> Result<(), Error>
             let height = u32::try_from(image.height)
                 .map_err(|error| Error::operation("invalid clipboard image height", error))?;
 
-            PngEncoder::new(&mut *output)
-                .write_image(&image.bytes, width, height, ExtendedColorType::Rgba8)
-                .map_err(|error| Error::operation("failed to write PNG to stdout", error))?;
+            match format {
+                Format::Jpeg => {
+                    let rgba = image::RgbaImage::from_raw(width, height, image.bytes.into_owned())
+                        .ok_or_else(|| Error::from("invalid clipboard image dimensions"))?;
+                    let rgb = image::DynamicImage::ImageRgba8(rgba).into_rgb8();
+                    image::codecs::jpeg::JpegEncoder::new(&mut *output)
+                        .write_image(rgb.as_raw(), width, height, ExtendedColorType::Rgb8)
+                        .map_err(|error| {
+                            Error::operation("failed to write JPEG to stdout", error)
+                        })?;
+                }
+                Format::Webp => image::codecs::webp::WebPEncoder::new_lossless(&mut *output)
+                    .write_image(&image.bytes, width, height, ExtendedColorType::Rgba8)
+                    .map_err(|error| Error::operation("failed to write WebP to stdout", error))?,
+                _ => PngEncoder::new(&mut *output)
+                    .write_image(&image.bytes, width, height, ExtendedColorType::Rgba8)
+                    .map_err(|error| Error::operation("failed to write PNG to stdout", error))?,
+            }
         }
     }
 
@@ -213,13 +318,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn writes_selected_image_encoding_and_checks_input_format() {
+        let pixels = vec![42, 42, 42, 128];
+
+        for format in [Format::Image, Format::Png, Format::Jpeg, Format::Webp] {
+            let image = ImageData {
+                width: 1,
+                height: 1,
+                bytes: pixels.clone().into(),
+            };
+            let mut output = Vec::new();
+            write_content(&mut output, Content::Image(image), format).unwrap();
+
+            let expected_format = match format {
+                Format::Jpeg => image::ImageFormat::Jpeg,
+                Format::Webp => image::ImageFormat::WebP,
+                _ => image::ImageFormat::Png,
+            };
+            assert_eq!(detect_image_format(&output), Some(expected_format));
+            let Content::Image(decoded) = parse_content(&output, format).unwrap() else {
+                panic!("expected image");
+            };
+            assert_eq!((decoded.width, decoded.height), (1, 1));
+            assert_eq!(
+                decoded.bytes[3],
+                if matches!(format, Format::Jpeg) {
+                    255
+                } else {
+                    128
+                }
+            );
+        }
+    }
+
+    #[test]
     fn paste_prefers_text() {
         let content = paste_content(Ok("hello 世界".to_owned()), false, || {
             panic!("must not request image when text is available")
         })
         .unwrap();
         let mut output = Vec::new();
-        write_content(&mut output, content).unwrap();
+        write_content(&mut output, content, Format::Auto).unwrap();
         assert_eq!(output, "hello 世界".as_bytes());
     }
 
@@ -235,8 +374,8 @@ mod tests {
         })
         .unwrap();
         let mut output = Vec::new();
-        write_content(&mut output, content).unwrap();
-        let Content::Image(image) = parse_content(&output).unwrap() else {
+        write_content(&mut output, content, Format::Auto).unwrap();
+        let Content::Image(image) = parse_content(&output, Format::Auto).unwrap() else {
             panic!("expected PNG image");
         };
         assert_eq!((image.width, image.height), (2, 1));
@@ -267,13 +406,18 @@ mod tests {
         .unwrap();
         assert!(error.to_string().contains("failed to read clipboard image"));
 
-        let error = write_content(&mut &mut [0_u8; 0][..], Content::Text("hello".to_owned()));
+        let error = write_content(
+            &mut &mut [0_u8; 0][..],
+            Content::Text("hello".to_owned()),
+            Format::Auto,
+        );
         assert!(error.is_err());
     }
 
     #[test]
     fn parses_text() {
-        let Content::Text(text) = parse_content("hello 世界".as_bytes()).unwrap() else {
+        let Content::Text(text) = parse_content("hello 世界".as_bytes(), Format::Auto).unwrap()
+        else {
             panic!("expected text");
         };
         assert_eq!(text, "hello 世界");
@@ -287,7 +431,7 @@ mod tests {
             .write_image(&pixels, 1, 1, ExtendedColorType::Rgba8)
             .unwrap();
 
-        let Content::Image(image) = parse_content(&png).unwrap() else {
+        let Content::Image(image) = parse_content(&png, Format::Auto).unwrap() else {
             panic!("expected image");
         };
         assert_eq!((image.width, image.height), (1, 1));
@@ -303,7 +447,7 @@ mod tests {
                 .write_image(&pixels, 2, 1, color)
                 .unwrap();
 
-            let Content::Image(image) = parse_content(&jpeg).unwrap() else {
+            let Content::Image(image) = parse_content(&jpeg, Format::Auto).unwrap() else {
                 panic!("expected JPEG image");
             };
             assert_eq!((image.width, image.height), (2, 1));
@@ -315,9 +459,9 @@ mod tests {
 
             let expected = image.bytes.to_vec();
             let mut output = Vec::new();
-            write_content(&mut output, Content::Image(image)).unwrap();
+            write_content(&mut output, Content::Image(image), Format::Auto).unwrap();
             assert!(output.starts_with(PNG_SIGNATURE));
-            let Content::Image(image) = parse_content(&output).unwrap() else {
+            let Content::Image(image) = parse_content(&output, Format::Auto).unwrap() else {
                 panic!("expected PNG image");
             };
             assert_eq!((image.width, image.height), (2, 1));
@@ -333,7 +477,7 @@ mod tests {
             .write_image(&pixels, 2, 1, ExtendedColorType::Rgba8)
             .unwrap();
 
-        let Content::Image(image) = parse_content(&webp).unwrap() else {
+        let Content::Image(image) = parse_content(&webp, Format::Auto).unwrap() else {
             panic!("expected WebP image");
         };
         assert_eq!((image.width, image.height), (2, 1));
@@ -344,19 +488,25 @@ mod tests {
     fn reports_invalid_input() {
         use std::error::Error as _;
 
-        let png_error = parse_content(b"\x89PNG\r\n\x1a\ninvalid").err().unwrap();
+        let png_error = parse_content(b"\x89PNG\r\n\x1a\ninvalid", Format::Auto)
+            .err()
+            .unwrap();
         assert!(png_error.to_string().contains("decode PNG"));
         assert!(png_error.source().unwrap().is::<image::ImageError>());
 
-        let jpeg_error = parse_content(b"\xff\xd8\xffinvalid").err().unwrap();
+        let jpeg_error = parse_content(b"\xff\xd8\xffinvalid", Format::Auto)
+            .err()
+            .unwrap();
         assert!(jpeg_error.to_string().contains("decode JPEG"));
         assert!(jpeg_error.source().unwrap().is::<image::ImageError>());
 
-        let webp_error = parse_content(b"RIFF\x04\0\0\0WEBP").err().unwrap();
+        let webp_error = parse_content(b"RIFF\x04\0\0\0WEBP", Format::Auto)
+            .err()
+            .unwrap();
         assert!(webp_error.to_string().contains("decode WebP"));
         assert!(webp_error.source().unwrap().is::<image::ImageError>());
 
-        let text_error = parse_content(b"\xff").err().unwrap();
+        let text_error = parse_content(b"\xff", Format::Auto).err().unwrap();
         assert!(matches!(text_error, Error::InvalidText(_)));
         assert!(text_error.to_string().contains("neither UTF-8"));
         assert!(text_error.source().unwrap().is::<std::str::Utf8Error>());
@@ -366,7 +516,12 @@ mod tests {
     fn preserves_text_boundaries() {
         for text in ["", "hello 世界\n\n"] {
             let mut output = Vec::new();
-            write_content(&mut output, parse_content(text.as_bytes()).unwrap()).unwrap();
+            write_content(
+                &mut output,
+                parse_content(text.as_bytes(), Format::Auto).unwrap(),
+                Format::Auto,
+            )
+            .unwrap();
             assert_eq!(output, text.as_bytes());
         }
     }
@@ -381,7 +536,7 @@ mod tests {
             PngEncoder::new(&mut png)
                 .write_image(&pixels, 1, 1, color)
                 .unwrap();
-            let Content::Image(image) = parse_content(&png).unwrap() else {
+            let Content::Image(image) = parse_content(&png, Format::Auto).unwrap() else {
                 panic!("expected image")
             };
             assert_eq!((image.width, image.height), (1, 1));
@@ -414,7 +569,8 @@ mod tests {
                 height: 1,
                 bytes: vec![0, 0, 0, 255].into(),
             };
-            let error = write_content(&mut Writer(fail_write), Content::Image(image)).unwrap_err();
+            let error = write_content(&mut Writer(fail_write), Content::Image(image), Format::Auto)
+                .unwrap_err();
             let operation = if fail_write {
                 "failed to write PNG to stdout"
             } else {
